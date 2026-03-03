@@ -8,7 +8,9 @@ cd submodules/dbaf
 sudo python setup.py install
 
 conda activate vings_vio
-srun --time=4:00:00 -A ls_polle -n 1  --cpus-per-task=4 --mem-per-cpu=10G --gpus=rtx_3090:1 --gres=gpumem:20g --pty bash
+# srun --time=1:00:00 -A ls_polle -n 1  --cpus-per-task=4 --mem-per-cpu=10G --gpus=rtx_3090:1 --gres=gpumem:20g --pty bash
+
+srun --time=1:00:00 -A ls_polle -n 1  --cpus-per-task=4 --mem-per-cpu=10G --gpus=1 --gres=gpumem:30g --pty bash
 srun --time=4:00:00 -A ls_polle -n 1  --cpus-per-task=4 --mem-per-cpu=10G --gpus=rtx_4090:1 --gres=gpumem:20g --pty bash
 module load stack/2024-04 cuda/11.8.0 
 
@@ -39,7 +41,7 @@ conda activate vings_vio
 python scripts/run_fastlivo.py --skip-slam --full-traj
 
 python scripts/run_rpngar.py  --seqs table_01
-
+ python scripts/run_odin.py --seqs Basement1
 python scripts/run_utmm.py  --full-traj --render-eval --skip-slam
 
 python scripts/run.py configs/rpng/rpngar_table.yaml
