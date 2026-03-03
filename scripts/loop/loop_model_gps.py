@@ -394,14 +394,14 @@ class LoopModelGPS:
             # Update *.txts.
             if not self.cfg['mode'] == 'vo_nerfslam':
                 os.makedirs(os.path.join(self.cfg['output']['save_dir'], 'droid_c2w_new'), exist_ok=True)
-                update_file_names = list(map(lambda x: str(x).zfill(6)+'.0.txt', tracker.frontend.video.tstamp_save[:tracker.frontend.video.count_save].cpu().to(torch.int32).tolist()))
+                update_file_names = [f"{ts}.txt" for ts in tracker.frontend.video.tstamp_save[:tracker.frontend.video.count_save].cpu().tolist()]
                 for idx in range(len(update_file_names)):
                     name = update_file_names[idx]
                     new_c2w = SE3(tracker.frontend.video.poses_save[idx]).inv().matrix().numpy()
                     np.savetxt(os.path.join(self.cfg['output']['save_dir'], 'droid_c2w_new', name), new_c2w)
             else:
                 os.makedirs(os.path.join(self.cfg['output']['save_dir'], 'droid_c2w_new'), exist_ok=True)
-                update_file_names = list(map(lambda x: str(x).zfill(6)+'.0.txt', tracker.visual_frontend.cam0_timestamps[:tracker.visual_frontend.kf_idx].cpu().to(torch.int32).tolist()))
+                update_file_names = [f"{ts}.txt" for ts in tracker.visual_frontend.cam0_timestamps[:tracker.visual_frontend.kf_idx].cpu().tolist()]
                 for idx in range(len(update_file_names)):
                     name = update_file_names[idx]
                     new_c2w = SE3(tracker.visual_frontend.cam0_T_world[idx]).cpu().inv().matrix().numpy()

@@ -12,7 +12,7 @@ import numpy as np
 class MotionFilter:
     """ This class is used to filter incoming frames and extract features """
 
-    def __init__(self, net, video, thresh=2.5, device="cuda:0"):
+    def __init__(self, net, video, thresh=2.5, device="cuda:0", max_skip=0):
         
         # split net modules
         self.cnet = net.cnet
@@ -22,6 +22,7 @@ class MotionFilter:
         self.video = video
         self.thresh = thresh
         self.device = device
+        self.max_skip = max_skip  # force frame after this many consecutive rejections (0 = disabled)
 
         self.count = 0
 
@@ -88,6 +89,11 @@ class MotionFilter:
                 self.count = 0
                 net, inp = self.__context_encoder(inputs[:,[0]]) 
                 self.net, self.inp, self.fmap = net, inp, gmap 
+                self.video.append(tstamp, image[0], None, None, depth, intrinsics / 8.0, gmap, net[0], inp[0])
+            elif self.max_skip > 0 and self.count >= self.max_skip:
+                self.count = 0
+                net, inp = self.__context_encoder(inputs[:,[0]])
+                self.net, self.inp, self.fmap = net, inp, gmap
                 self.video.append(tstamp, image[0], None, None, depth, intrinsics / 8.0, gmap, net[0], inp[0])
             else:
                 self.count += 1

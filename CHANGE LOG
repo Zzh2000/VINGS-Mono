@@ -1,0 +1,32 @@
+disable Loop closure
+disable metric metric_depth
+For UTMM lower IMU init thresh to 20.0 (from 25.0)
+For UTMM not enough keyframe for slow-straight-1 and slow-straight-2, lower filter_thresh 2.4->1.5, lower keyframe_thresh 3.0->2.0 (only for the two seq)
+
+
+
+valid mask all true, otherwise a lot of region (50%) not involved in mapping
+
+
+
+
+Metric: True, 
+The mono depth is direclty used 
+
+
+
+  Yes, use_metric: True uses monocular depth (Metric3D v2-S).                                                                                                                                                    
+                                                                                                                                                                                                                 
+  No scale/shift alignment — it's treated as metric (real) depth directly.                                                                                                                                       
+                                                                                                                                                                                                                 
+  Here's what happens:
+
+  1. Metric3D predicts depth conditioned on camera intrinsics (metric_model.py:53). Metric3D is a metric depth estimator — it predicts absolute depth in meters (not affine-invariant like MiDaS/DPT).
+  2. Depth is stored as disparity (depth_video.py:178):
+  self.disps_sens[index] = torch.where(depth > 0, 1.0/depth, depth)
+  2. No scale or shift is applied — it's a direct 1/depth inversion.
+  3. disps_sens is passed directly into droid_backends.ba() as the sensor prior. In the DROID-SLAM BA formulation, disps_sens acts as a soft constraint/regularizer on the disparity — the optimizer tries to
+  keep disps close to disps_sens, weighted by some uncertainty.
+
+  Key distinction: This only works correctly because Metric3D outputs metric-scale depth (not relative depth). If you swapped in a relative depth estimator (e.g., MiDaS), you'd need scale/shift alignment
+  (e.g., via least-squares fit against the SLAM disparity estimates) before using it as disps_sens.

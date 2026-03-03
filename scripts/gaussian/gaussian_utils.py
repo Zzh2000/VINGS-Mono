@@ -30,7 +30,12 @@ def get_pointcloud_v1(tfer, c2w, gt_rgb: torch.Tensor, gt_depth: torch.Tensor, p
     H, W = gt_rgb.shape[-2], gt_rgb.shape[-1]
     rgb = gt_rgb.unsqueeze(0)
     all_valid_num = (gt_depth>0).sum()
-    
+    if all_valid_num == 0:
+        device = gt_depth.device
+        return (torch.zeros((0, 3), device=device, dtype=torch.float32),
+                torch.zeros((0, 3), device=device, dtype=torch.float32),
+                torch.zeros((0, 4), device=device, dtype=torch.float32))
+
     gt_depth_cp = gt_depth.squeeze(0) + 0.0
     gt_depth_cp[pred_accum.squeeze(0)>tfer.cfg['adc_args']['accum_thresh']] = 0
     accum_valid_num = (gt_depth_cp>0).sum()

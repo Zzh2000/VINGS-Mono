@@ -136,6 +136,10 @@ class GaussianModel(GaussianBase):
         new_added_pc, new_added_pc_color, unnorm_rots = get_pointcloud(self.tfer, new_added_c2w, new_added_color.permute(2, 0, 1), new_added_depth.permute(2, 0, 1), pred_accum, 40000) # 30000
         num_pts = new_added_pc.shape[0]
 
+        if num_pts == 0:
+            self.setup_optimizer()
+            return
+
         dist2 = torch.clamp_min(distCUDA2(new_added_pc), 0.0000001)
         log_scales = torch.log(1.0 * torch.sqrt(dist2))[..., None].repeat(1, 2)
         logit_opacities = inverse_sigmoid((0.8*torch.ones((num_pts, 1), device=new_added_pc.device))).to(torch.float)

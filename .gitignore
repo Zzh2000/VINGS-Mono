@@ -1,6 +1,12 @@
+logs
+.claude
+slurm*
+prev_output
+output*
+Datasets
 __pycache__/
 .vscode/
 build_gtsam/*
 # submodules/*  # Commented out to allow submodules
-ckpts/*
+ckpts/* 
 output/*

@@ -23,17 +23,45 @@ class DBAFusion:
         self.video = DepthVideo(cfg, cfg['frontend']['image_size'], cfg['frontend']['buffer'])
         self.video.Ti1c = cfg['frontend']['c2i']
         self.video.Tbc = gtsam.Pose3(self.video.Ti1c)
-        self.video.state.set_imu_params([ 0.0003924 * 25,0.000205689024915 * 25, 0.004905 * 10, 0.000001454441043 * 500])
-        self.video.init_pose_sigma = np.array([1.0, 1.0, 0.0001, 1.0, 1.0, 1.0])
-        self.video.init_bias_sigma = np.array([0.1, 0.1, 0.1, 0.1, 0.1, 0.1])
+        if 'rpngar' in cfg['dataset']['module']:
+            self.video.state.set_imu_params((np.array([0.366, 0.113, 0.0001575, 0.0000246])*1.0).tolist())
+            self.video.init_pose_sigma = np.array([0.5, 0.5, 0.0001, 0.1, 0.1, 0.1])
+            self.video.init_bias_sigma = np.array([1.0, 1.0, 1.0, 0.1, 0.1, 0.1])
+        elif 'fastlivo' in cfg['dataset']['module']:
+            # FAST-LIVO2: Livox camera + IMU (MID-360 / similar)
+            self.video.state.set_imu_params((np.array([2.0e-3*10, 1.6968e-4*10, 3.0e-3*10, 1.9393e-5*500])*1.0).tolist())
+            self.video.init_pose_sigma = np.array([0.5, 0.5, 0.0001, 0.1, 0.1, 0.1])
+            self.video.init_bias_sigma = np.array([1.0, 1.0, 1.0, 0.1, 0.1, 0.1])
+        elif 'utmm' in cfg['dataset']['module']:
+            # UTMM: RealSense D435i
+            self.video.state.set_imu_params([ 0.0003924*25, 0.000205689024915*25, 0.004905*10, 0.000001454441043*5000])
+            self.video.init_pose_sigma = np.array([0.1, 0.1, 0.0001, 0.0001, 0.0001, 0.0001])
+            self.video.init_bias_sigma = np.array([1.0, 1.0, 1.0, 1.0, 1.0, 1.0])
+        elif 'euroc' in cfg['dataset']['module']:
+            # EuRoC: ADIS16448 IMU
+            self.video.state.set_imu_params((np.array([
+                2.0e-3 * 10,       # accel_noise_sigma
+                1.6968e-4 * 10,    # gyro_noise_sigma
+                3.0e-3 * 10,       # accel_bias_rw_sigma
+                1.9393e-5 * 500,   # gyro_bias_rw_sigma
+            ]) * 1.0).tolist())
+            self.video.init_pose_sigma = np.array([0.1, 0.1, 0.0001, 0.0001, 0.0001, 0.0001])
+            self.video.init_bias_sigma = np.array([1.0, 1.0, 1.0, 1.0, 1.0, 1.0])
+        else:
+            self.video.state.set_imu_params([ 0.0003924 * 25,0.000205689024915 * 25, 0.004905 * 10, 0.000001454441043 * 500])
+            self.video.init_pose_sigma = np.array([1.0, 1.0, 0.0001, 1.0, 1.0, 1.0])
+            self.video.init_bias_sigma = np.array([0.1, 0.1, 0.1, 0.1, 0.1, 0.1])
 
         # filter incoming frames so that there is enough motion
-        self.filterx = MotionFilter(self.net, self.video, thresh=cfg['frontend']['filter_thresh'])
+        # max_skip is only active for EuRoC (forces a keyframe after N consecutive rejections)
+        _max_skip = cfg['frontend'].get('max_skip', 0) if 'euroc' in cfg['dataset']['module'] else 0
+        self.filterx = MotionFilter(self.net, self.video, thresh=cfg['frontend']['filter_thresh'],
+                                    max_skip=_max_skip)
         
         # frontend process
         self.frontend = DBAFusionFrontend(self.net, self.video, self.cfg)
         
-        self.frontend.translation_threshold  = 0.2
+        self.frontend.translation_threshold  = cfg['frontend'].get('translation_threshold', 0.1)
         self.frontend.graph.mask_threshold   = -1.0
         self.upsample = True
         

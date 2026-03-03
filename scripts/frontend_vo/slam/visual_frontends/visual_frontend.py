@@ -1603,7 +1603,7 @@ class RaftVisualFrontend(VisualFrontend):
                        "kf_idx_to_f_idx":     self.kf_idx_to_f_idx,
                        "is_last_frame":       batch["is_last_frame"],
                        # TTD 2024/05/17
-                       "viz_out_idx_to_f_idx": self.cam0_timestamps[self.viz_idx].to(torch.long)
+                       "viz_out_idx_to_f_idx": self.cam0_timestamps[self.viz_idx]  # keep as float for timestamp consistency
                       }
             self.viz_idx[:] = False
         else:

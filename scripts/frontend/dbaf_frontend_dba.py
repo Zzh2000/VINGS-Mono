@@ -1,24 +1,23 @@
 import torch
 import torchvision
 import numpy as np
-
+import os
 from lietorch import SE3, SO3
-from frontend.covisible_graph import CovisibleGraph
+from covisible_graph import CovisibleGraph
 import matplotlib.pyplot as plt
 
 import gtsam
 import math
 import bisect
 from math import atan2, cos, sin
-import frontend.geoFunc.trans as trans
+import geoFunc.trans as trans
 from scipy.spatial.transform import Rotation
 
 class DBAFusionFrontend:
-    def __init__(self, net, video, cfg):
+    def __init__(self, net, video, args):
         self.video = video
-        self.cfg = cfg
         self.update_op = net.update
-        self.graph = CovisibleGraph(video, net.update, config=cfg)
+        self.graph = CovisibleGraph(video, net.update, args=args)
 
         # local optimization window
         self.t0 = 0
@@ -27,38 +26,33 @@ class DBAFusionFrontend:
         # frontend variables
         self.is_initialized = False
         self.count = 0
-        self.warmup = cfg['frontend']['warm_up']
+
+        self.warmup = args.warmup
         self.vi_warmup = 12
-        self.beta = cfg['frontend']['beta']
-        self.frontend_nms = cfg['frontend']['frontend_nms']
-        self.keyframe_thresh = cfg['frontend']['keyframe_thresh']
-        self.frontend_window = cfg['frontend']['frontend_window']
-        self.frontend_thresh = cfg['frontend']['frontend_thresh']
-        self.frontend_radius = cfg['frontend']['frontend_radius']
+        if 'vi_warmup' in args: self.vi_warmup = args.vi_warmup
+        self.beta = args.beta
+        self.frontend_nms = args.frontend_nms
+        self.keyframe_thresh = args.keyframe_thresh
+        self.frontend_window = args.frontend_window
+        self.frontend_thresh = args.frontend_thresh
+        self.frontend_radius = args.frontend_radius
 
         ### DBAFusion
         self.all_imu = None
         self.cur_imu_ii = 0
         self.is_init = False
-        self.all_gnss = []
-        self.all_odo = []
+        self.all_gnss = None
+        self.all_odo = None
         self.all_gt = None
         self.all_gt_keys = None
         self.all_stamp = None
         self.cur_stamp_ii = 0
-        if self.cfg['mode'] == 'vio':
-            cfg['frontend']['visual_only'] = False
-        elif self.cfg['mode'] == 'vo':
-            cfg['frontend']['visual_only'] = True
-        else:
-            raise Exception('Invalid mode')
-        self.visual_only = cfg['frontend']['visual_only']
-        self.visual_only_init = cfg['frontend']['visual_only']
+        self.visual_only = args.visual_only
+        self.visual_only_init = False
         self.translation_threshold = 0.0
-        self.active_window = cfg['frontend']['active_window']
-        # Dangerous Option.
+        self.active_window = args.active_window
         self.high_freq_output = True
-        self.zupt = False
+        self.zupt = ('use_zupt' in args and args.use_zupt)
 
         if  not self.visual_only:
             self.max_age = 25
@@ -66,11 +60,13 @@ class DBAFusionFrontend:
             self.iters2 = 1
         else:
             self.max_age = 25
-            self.iters1 = 4 # 4
-            self.iters2 = 2 # 2
+            self.iters1 = 4
+            self.iters2 = 2
 
         # visualization/output
-        self.show_plot = cfg['frontend']['show_plot']
+        self.show_plot = args.show_plot
+        os.makedirs(os.path.dirname(args.resultpath), exist_ok=True)
+        self.result_file = open(args.resultpath,'wt')
         self.plt_pos     = [[],[]]    # X, Y
         self.plt_pos_ref = [[],[]]    # X, Y
         self.plt_att     = [[],[],[]] # pitch, roll, yaw
@@ -78,8 +74,6 @@ class DBAFusionFrontend:
         self.plt_t       = []
         self.refTw       = np.eye(4,4)
 
-        self.new_frame_added = False
-        
         if self.show_plot:
             plt.figure('monitor',figsize=[13,4])
             plt.subplot(1,3,1); plt.gca().set_title('Trajectory')
@@ -110,10 +104,6 @@ class DBAFusionFrontend:
         self.video.fmaps      = torch.roll(self.video.fmaps     ,-roll,0) 
         self.video.nets       = torch.roll(self.video.nets      ,-roll,0) 
         self.video.inps       = torch.roll(self.video.inps      ,-roll,0) 
-        # OK, I know that, I forget to rollup.
-        self.video.depths_cov    = torch.roll(self.video.depths_cov,   -roll,0) 
-        self.video.depths_cov_up = torch.roll(self.video.depths_cov_up,-roll,0) 
-        
         self.graph.ii -= roll
         self.graph.jj -= roll
         self.graph.ii_inac -= roll
@@ -129,10 +119,8 @@ class DBAFusionFrontend:
 
         self.video.last_t0 -= roll
         self.video.last_t1 -= roll
-        if self.cfg['mode'] == 'vio':
-            self.video.cur_ii  -= roll
-            self.video.cur_jj  -= roll
-        
+        self.video.cur_ii  -= roll
+        self.video.cur_jj  -= roll
         if self.video.imu_enabled:
             graph_temp = gtsam.NonlinearFactorGraph()
             for i in range(self.video.cur_graph.size()):
@@ -151,8 +139,7 @@ class DBAFusionFrontend:
                     raise Exception()
             self.video.cur_result = result_temp
             self.video.marg_factor = self.video.marg_factor.rekey((np.array(self.video.marg_factor.keys())-roll).tolist())
-        
-        
+
         self.video.state.timestamps           = self.video.state.timestamps           [roll:]
         self.video.state.wTbs                 = self.video.state.wTbs                 [roll:]
         self.video.state.vs                   = self.video.state.vs                   [roll:]
@@ -166,17 +153,16 @@ class DBAFusionFrontend:
 
     def __update(self):
         """ add edges, perform update """
-        self.new_frame_added = False
         self.count += 1
         self.t1 += 1
-        
+
         if self.video.imu_enabled and (self.video.tstamp[self.t1-1] - self.video.vi_init_time > 5.0):
             self.video.reinit = True
             self.video.vi_init_time = 1e9
-            
+
         ## new frame comes, append IMU
         cur_t = float(self.video.tstamp[self.t1-1].detach().cpu())
-        # self.video.logger.info('predict %f' %cur_t)
+        self.video.logger.info('predict %f' %cur_t)
 
         while self.all_imu[self.cur_imu_ii][0] < cur_t:
             ## high-frequency output
@@ -184,8 +170,8 @@ class DBAFusionFrontend:
             if self.high_freq_output and self.video.imu_enabled: 
                 if self.all_imu[self.cur_imu_ii][0] > float(self.all_stamp[self.cur_stamp_ii][0]):
                     self.video.state.append_imu_temp(float(self.all_stamp[self.cur_stamp_ii][0]),\
-                                                    self.all_imu[self.cur_imu_ii][4:7],\
-                                                    self.all_imu[self.cur_imu_ii][1:4]/180*math.pi,True)
+                                    self.all_imu[self.cur_imu_ii][4:7],\
+                                    self.all_imu[self.cur_imu_ii][1:4]/180*math.pi,True)
                     if float(self.all_stamp[self.cur_stamp_ii][0]) > self.video.state.timestamps[-1] and\
                           math.fabs(cur_t - float(self.all_stamp[self.cur_stamp_ii][0]))>1e-3:
                         pose_temp = self.video.state.pose_temp
@@ -196,38 +182,34 @@ class DBAFusionFrontend:
                         if self.video.gnss_init_t1>0:
                             p = self.video.ten0 + np.matmul(trans.Cen(self.video.ten0), ppp)
                             line += ' %.6f %.6f %.6f'% (p[0],p[1],p[2]) 
-                        
+                        self.result_file.writelines(line+'\n')
+                        # self.result_file.flush()
                     self.cur_stamp_ii += 1
                 self.video.state.append_imu_temp(self.all_imu[self.cur_imu_ii][0],\
                                     self.all_imu[self.cur_imu_ii][4:7],\
                                     self.all_imu[self.cur_imu_ii][1:4]/180*math.pi)
-            
+                
             self.video.state.append_imu(self.all_imu[self.cur_imu_ii][0],\
                                     self.all_imu[self.cur_imu_ii][4:7],\
                                     self.all_imu[self.cur_imu_ii][1:4]/180*math.pi)
             self.cur_imu_ii += 1
-            '''
-            self.all_imu[self.cur_imu_ii]
-            '''
-        # ---------------------------------------------------------------------------
-
         self.video.state.append_imu(cur_t,\
                                     self.all_imu[self.cur_imu_ii][4:7],\
                                     self.all_imu[self.cur_imu_ii][1:4]/180*math.pi)
         self.video.state.append_img(cur_t)
         
-        ## append GNSS, self.all_gnss=[]
+        ## append GNSS
         if len(self.all_gnss) > 0: gnss_found = bisect.bisect(self.all_gnss[:,0],cur_t - 1e-6)
         else: gnss_found = -1        
         if gnss_found > 0 and self.all_gnss[gnss_found,0] - cur_t < 0.01 :
             self.video.state.append_gnss(cur_t,self.all_gnss[gnss_found,1:4])
 
-        ## append ZUPT, self.zupt=False
+        ## append ZUPT
         if self.zupt and self.video.state.preintegrations[self.t1-3].deltaTij() > 3.0:
             if np.linalg.norm(self.video.state.vs[self.t1-2]) < 0.025:
                 self.video.state.append_odo(cur_t,np.array([.0,.0,.0]))
 
-        ## append ODO, self.all_odo=[]
+        ## append ODO
         if len(self.all_odo) > 0: odo_found = bisect.bisect(self.all_odo[:,0],cur_t - 1e-6)
         else: odo_found = -1        
         if odo_found > 0 and self.all_odo[odo_found,0] - cur_t < 0.01 :
@@ -246,7 +228,7 @@ class DBAFusionFrontend:
             t = TTT[:3,3]
             self.video.poses[self.t1-1] = torch.cat([t,q])
 
-        # self.video.logger.info('manage edges')
+        self.video.logger.info('manage edges')
 
         ## manage edges (60 ms)
         if self.graph.corr is not None:
@@ -260,22 +242,22 @@ class DBAFusionFrontend:
         self.graph.add_proximity_factors(self.t1-5, max(self.t1-self.frontend_window, 0), 
             rad=self.frontend_radius, nms=self.frontend_nms, thresh=self.frontend_thresh, beta=self.beta, remove=True)
 
-        # self.video.logger.info('non-keyframes %d' % self.graph.ii.shape[0])
+        self.video.logger.info('non-keyframes %d' % self.graph.ii.shape[0])
 
         ## non-keyframe update
         self.video.disps[self.t1-1] = torch.where(self.video.disps_sens[self.t1-1] > 0, 
-                                                  self.video.disps_sens[self.t1-1], self.video.disps[self.t1-1])
-        
+           self.video.disps_sens[self.t1-1], self.video.disps[self.t1-1])
+
         for itr in range(self.iters1):
             self.graph.update(None, None, use_inactive=True)
 
         self.rollup = False
         if self.t1 > 65:
             self.__rollup(30)
-            # print('rollup ',self.graph.ii)
+            print('rollup ',self.graph.ii)
             self.rollup = True
 
-        # self.video.logger.info('output')
+        self.video.logger.info('output')
 
         ## visualization/output
         poses = SE3(self.video.poses)
@@ -289,8 +271,8 @@ class DBAFusionFrontend:
             if self.video.gnss_init_t1>0:
                 p = self.video.ten0 + np.matmul(trans.Cen(self.video.ten0), ppp.numpy())
                 line += ' %.6f %.6f %.6f'% (p[0],p[1],p[2]) 
-            # self.result_file.writelines(line+'\n')
-            # self.result_file.flush()
+            self.result_file.writelines(line+'\n')
+            self.result_file.flush()
 
         TTTref = np.matmul(self.refTw,TTT)
         ppp = TTTref[0:3,3]
@@ -318,7 +300,7 @@ class DBAFusionFrontend:
                 plt.subplot(1,3,1)
                 plt.cla(); plt.gca().set_title('Trajectory')
                 plt.plot(self.plt_pos[0],self.plt_pos[1],marker='^')
-                # plt.plot(self.plt_pos_ref[0],self.plt_pos_ref[1],marker='^')
+                plt.plot(self.plt_pos_ref[0],self.plt_pos_ref[1],marker='^')
                 plt.subplot(1,3,2)
                 plt.cla(); plt.gca().set_title('Attitude Error/Attitude')
                 plt.plot(self.plt_t,self.plt_att[0],c='r')
@@ -334,16 +316,14 @@ class DBAFusionFrontend:
 
 
         ## keyframe update
-        # self.video.logger.info('keyframes %d' % self.graph.ii.shape[0])
+        self.video.logger.info('keyframes %d' % self.graph.ii.shape[0])
         if self.t1 > 10:
             cam_translation =  torch.norm((poses[(self.t1-10):(self.t1-3)] * poses[self.t1-2].inv()[None]).translation()[:,0:3],dim=1)
         else:
             cam_translation =  torch.norm((poses[(self.t1-6):(self.t1-3)] * poses[self.t1-2].inv()[None]).translation()[:,0:3],dim=1)
 
-        # if (d.item() < self.keyframe_thresh or (self.video.imu_enabled and torch.sum(cam_translation < self.translation_threshold)>0)): # gnss
-        # TTD 2024/09/27
-        # Dangerous Option.
-        if (d.item() < self.keyframe_thresh):
+        if (d.item() < self.keyframe_thresh or (self.video.imu_enabled and torch.sum(cam_translation < self.translation_threshold)>0)): # gnss
+            self.video.logger.info('remove new frame!!!!!!!!!!!!1')
             self.graph.rm_keyframe(self.t1 - 2)
 
             # merge preintegration[self.t1-2] and preintegration[self.t1-3]
@@ -351,8 +331,8 @@ class DBAFusionFrontend:
                 dd = self.video.state.preintegrations_meas[self.t1-2][iii]
                 if dd[2] > 0:
                     self.video.state.preintegrations[self.t1-3].integrateMeasurement(dd[0],\
-                                                                                     dd[1],\
-                                                                                     dd[2])
+                                                                                      dd[1],\
+                                                                                      dd[2])
                 self.video.state.preintegrations_meas[self.t1-3].append(dd)
                 
             self.video.state.preintegrations[self.t1-2] = self.video.state.preintegrations[self.t1-1]
@@ -377,8 +357,6 @@ class DBAFusionFrontend:
                 # print('b%d' % itr)
                 self.graph.update(None, None, use_inactive=True)
 
-            self.new_frame_added = True
-            
         ## try initializing VI/GNSS
         if self.t1 > self.vi_warmup and self.video.vi_init_t1 < 0:
             self.init_VI()
@@ -391,7 +369,6 @@ class DBAFusionFrontend:
         if self.video.imu_enabled and self.video.gnss_init_time <= 0.0 and len(self.all_gnss)>0:
             self.init_GNSS()
 
-        
         ## set pose for next itration
         self.video.poses[self.t1] = self.video.poses[self.t1-1]
         self.video.disps[self.t1] = self.video.disps[self.t1-1].mean() * 1.0
@@ -471,17 +448,8 @@ class DBAFusionFrontend:
             tmp_g = self.video.state.preintegrations[i].deltaVij()/dt
             var_g += np.linalg.norm(tmp_g - aver_g)**2
         var_g =math.sqrt(var_g/ccount)
-        excitation_thresh = 0.15 if 'utmm' in self.cfg['dataset']['module'] else 0.25
-        if var_g < excitation_thresh:
-            print(f"IMU excitation var_g={var_g:.4f} (need >= {excitation_thresh})")
-            # Remember to Delete, 2024/11/03
-            # self.graph.update(None, None, use_inactive=True)
-            # self.graph.update(None, None, use_inactive=True)
-            # self.video.set_prior(self.video.last_t0,self.t1)
-            # self.video.visual_only_init = True
-            # for itr in range(1):
-            #     self.graph.update(None, None, use_inactive=True)
-            print("IMU excitation not enough!")
+        if var_g < 0.25:
+            print("IMU excitation not enough!",var_g)
         else:
             poses = SE3(self.video.poses)
             self.plt_pos = [[],[]]
@@ -499,7 +467,7 @@ class DBAFusionFrontend:
                 plt.subplot(1,3,1) 
                 plt.cla(); plt.gca().set_title('Trajectory')
                 plt.plot(self.plt_pos[0],self.plt_pos[1],marker='^')
-                # plt.plot(self.plt_pos_ref[0],self.plt_pos_ref[1],marker='^')
+                plt.plot(self.plt_pos_ref[0],self.plt_pos_ref[1],marker='^')
                 plt.pause(0.1)
 
             if not self.visual_only:
@@ -525,8 +493,8 @@ class DBAFusionFrontend:
                 TTT = self.video.state.wTbs[i].matrix()
                 ppp = TTT[0:3,3]
                 qqq = Rotation.from_matrix(TTT[:3, :3]).as_quat()
-                # self.result_file.writelines('%.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f\n'%(self.video.tstamp[i],ppp[0],ppp[1],ppp[2]\
-                #                             ,qqq[0],qqq[1],qqq[2],qqq[3]))
+                self.result_file.writelines('%.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f\n'%(self.video.tstamp[i],ppp[0],ppp[1],ppp[2]\
+                                            ,qqq[0],qqq[1],qqq[2],qqq[3]))
                 
                 TTTref = np.matmul(self.refTw,TTT) # for visualization
                 ppp = TTTref[0:3,3]
@@ -541,7 +509,7 @@ class DBAFusionFrontend:
                 plt.subplot(1,3,1)
                 plt.cla(); plt.gca().set_title('Trajectory')
                 plt.plot(self.plt_pos[0],self.plt_pos[1],marker='^')
-                # plt.plot(self.plt_pos_ref[0],self.plt_pos_ref[1],marker='^')
+                plt.plot(self.plt_pos_ref[0],self.plt_pos_ref[1],marker='^')
                 plt.pause(0.1)
 
             for itr in range(1):
@@ -613,8 +581,8 @@ class DBAFusionFrontend:
                 TTT = self.video.state.wTbs[i].matrix()
                 ppp = TTT[0:3,3]
                 qqq = Rotation.from_matrix(TTT[:3, :3]).as_quat()
-                # self.result_file.writelines('%.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f\n'%(self.video.tstamp[i],ppp[0],ppp[1],ppp[2]\
-                #                            ,qqq[0],qqq[1],qqq[2],qqq[3]))
+                self.result_file.writelines('%.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f\n'%(self.video.tstamp[i],ppp[0],ppp[1],ppp[2]\
+                                            ,qqq[0],qqq[1],qqq[2],qqq[3]))
                 
                 TTTref = np.matmul(self.refTw,TTT) # for visualization
                 ppp = TTTref[0:3,3]
@@ -629,7 +597,7 @@ class DBAFusionFrontend:
                 plt.subplot(1,3,1)
                 plt.cla(); plt.gca().set_title('Trajectory')
                 plt.plot(self.plt_pos[0],self.plt_pos[1],marker='^')
-                # plt.plot(self.plt_pos_ref[0],self.plt_pos_ref[1],marker='^')
+                plt.plot(self.plt_pos_ref[0],self.plt_pos_ref[1],marker='^')
                 plt.pause(0.1)
 
             for itr in range(1):
@@ -762,7 +730,7 @@ class DBAFusionFrontend:
                 tmp_b = np.zeros(6)
                 pim = self.video.state.preintegrations[i]
                 dt = pim.deltaTij()
-                
+
                 tmp_A[0:3,0:3] = -dt *np.eye(3,3)
                 tmp_A[0:3,6:8] = np.matmul(R_i.T,lxly) * dt * dt /2 
                 tmp_A[0:3,8]   = np.matmul(R_i.T,t_j - t_i) / 100.0
@@ -829,7 +797,7 @@ class DBAFusionFrontend:
             self.video.state.vs[i] = np.matmul(R0, self.video.state.vs[i])
             self.video.state.wTbs[i] = gtsam.Pose3(wTbs[i])
 
-        self.video.vi_init_t1   = t1
+        self.video.vi_init_t1 = t1
         self.video.vi_init_time = self.video.tstamp[t1-1]
 
         if not ignore_lever:
@@ -876,7 +844,7 @@ class DBAFusionFrontend:
         
         # initialization complete
         self.is_initialized = True
-        
+
         with self.video.get_lock():
             self.video.ready.value = 1
             self.video.dirty[:self.t1] = True
@@ -892,6 +860,5 @@ class DBAFusionFrontend:
         # do update
         elif self.is_initialized and self.t1 < self.video.counter.value:
             self.__update()
-        
 
         

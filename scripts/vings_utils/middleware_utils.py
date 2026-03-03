@@ -34,7 +34,7 @@ def judge_and_package_v0(dba_fusion, intrinsics):
             w2c_tqs    = dba_fusion.video.poses_save[activate_kf_id]
             c2ws       = torch.linalg.inv(tq_to_matrix(w2c_tqs))
             intrinsic  = {'fu': intrinsics[1].to(DEVICE), 'fv':intrinsics[0].to(DEVICE), 'cu':intrinsics[3].to(DEVICE), 'cv':intrinsics[2].to(DEVICE), 'H':depths.shape[1], 'W':depths.shape[2]}
-            rgbs[(depths.squeeze(-1)==0)] = 0.0
+            # rgbs[(depths.squeeze(-1)==0)] = 0.0
             pixel_mask = torch.ones_like(depths.squeeze(-1), dtype=torch.bool)
             viz_out = {'images': rgbs.to(DEVICE), 'depths': depths.to(DEVICE), 'depths_cov': depths_cov.to(DEVICE), 'poses': c2ws.to(DEVICE), 'viz_out_idx_to_f_idx': tstamps, 'intrinsic': intrinsic}
             viz_out['pixel_mask']   = pixel_mask
@@ -69,10 +69,10 @@ def judge_and_package_v0_kitti360unsync(dba_fusion, intrinsics):
             
             w2c_tqs    = dba_fusion.video.poses_save[activate_kf_id]
             c2ws       = torch.linalg.inv(tq_to_matrix(w2c_tqs))
-            rgbs[(depths.squeeze(-1)==0)] = 0.0
+            # rgbs[(depths.squeeze(-1)==0)] = 0.0
             pixel_mask = torch.ones_like(depths.squeeze(-1), dtype=torch.bool)
-            
-            
+
+
             u_scale = dba_fusion.cfg['intrinsic']['new_H']/dba_fusion.cfg['intrinsic']['H']
             
             new_H = int(u_scale*dba_fusion.cfg['frontend']['image_size'][0])
@@ -129,7 +129,7 @@ def judge_and_package_v1(dba_fusion, intrinsics):
             w2c_tqs    = dba_fusion.video.poses_save[activate_kf_id]
             c2ws       = torch.linalg.inv(tq_to_matrix(w2c_tqs))
             intrinsic  = {'fu': intrinsics[1], 'fv':intrinsics[0], 'cu':intrinsics[3], 'cv':intrinsics[2], 'H':depths.shape[1], 'W':depths.shape[2]}
-            rgbs[(depths.squeeze(-1)==0)] = 0.0
+            # rgbs[(depths.squeeze(-1)==0)] = 0.0
             pixel_mask = torch.ones_like(depths.squeeze(-1), dtype=torch.bool)
             viz_out = {'images': rgbs.to(DEVICE), 'depths': depths.to(DEVICE), 'depths_cov': depths_cov.to(DEVICE), 'poses': c2ws.to(DEVICE), 'viz_out_idx_to_f_idx': tstamps, 'intrinsic': intrinsic}
             viz_out['pixel_mask']   = pixel_mask
@@ -183,7 +183,7 @@ def judge_and_package_v2(dba_fusion, intrinsics):
             w2c_tqs    = dba_fusion.video.poses[valid_localkf_id]
             c2ws       = torch.linalg.inv(tq_to_matrix(w2c_tqs))
             intrinsic  = {'fu': intrinsics[1], 'fv':intrinsics[0], 'cu':intrinsics[3], 'cv':intrinsics[2], 'H':depths.shape[1], 'W':depths.shape[2]}
-            rgbs[(depths.squeeze(-1)==0)] = 0.0
+            # rgbs[(depths.squeeze(-1)==0)] = 0.0
             pixel_mask = torch.ones_like(depths.squeeze(-1), dtype=torch.bool)
             viz_out = {'images': rgbs.to(DEVICE), 'depths': depths.to(DEVICE), 'depths_cov': depths_cov.to(DEVICE), 'poses': c2ws.to(DEVICE), 'viz_out_idx_to_f_idx': tstamps, 'intrinsic': intrinsic}
             viz_out['pixel_mask']   = pixel_mask
@@ -235,7 +235,7 @@ def judge_and_package_v3(dba_fusion, intrinsics):
             w2c_tqs    = dba_fusion.video.poses[valid_localkf_id]
             c2ws       = torch.linalg.inv(tq_to_matrix(w2c_tqs))
             intrinsic  = {'fu': intrinsics[1], 'fv':intrinsics[0], 'cu':intrinsics[3], 'cv':intrinsics[2], 'H':depths.shape[1], 'W':depths.shape[2]}
-            rgbs[(depths.squeeze(-1)==0)] = 0.0
+            # rgbs[(depths.squeeze(-1)==0)] = 0.0
             pixel_mask = torch.ones_like(depths.squeeze(-1), dtype=torch.bool)
             viz_out = {'images': rgbs.to(DEVICE), 'depths': depths.to(DEVICE), 'depths_cov': depths_cov.to(DEVICE), 'poses': c2ws.to(DEVICE), 'viz_out_idx_to_f_idx': tstamps, 'intrinsic': intrinsic}
             viz_out['pixel_mask']   = pixel_mask

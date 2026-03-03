@@ -161,7 +161,7 @@ def vis_rgbdnua(cfg, frame_id, pred_dict, gt_dict, return_image=False):
         cv2.imwrite(f"{cfg['output']['save_dir']}/rgbdnua/FrameId={str(frame_id.item()).zfill(5)}.png", img)
 
     c2w = gt_dict['pose']
-    np.savetxt(f"{cfg['output']['save_dir']}/droid_c2w/{str(frame_id.item()).zfill(8)}.txt", c2w.cpu().numpy())
+    np.savetxt(f"{cfg['output']['save_dir']}/droid_c2w/{frame_id.item()}.txt", c2w.cpu().numpy())
     
     
     with open(cfg['output']['save_dir']+'/keyframelist.txt', 'a') as f:
@@ -243,9 +243,9 @@ def save_ply(gaussian_model, idx, save_mode='3dgs'):
         save_path = os.path.join(gaussian_model.cfg['output']['save_dir'], 'ply', f'idx={idx}_{save_mode}.ply')
         PlyData([el]).write(save_path)
         # Save Intrinsic.
-        intrinsic_dict = {'fu': gaussian_model.tfer.fu, 'fv': gaussian_model.tfer.fv, 
-                        'cu': gaussian_model.tfer.cu, 'cv': gaussian_model.tfer.cv, 
-                        'H': gaussian_model.tfer.H, 'W': gaussian_model.tfer.W}
+        intrinsic_dict = {'fu': float(gaussian_model.tfer.fu), 'fv': float(gaussian_model.tfer.fv),
+                        'cu': float(gaussian_model.tfer.cu), 'cv': float(gaussian_model.tfer.cv),
+                        'H': int(gaussian_model.tfer.H), 'W': int(gaussian_model.tfer.W)}
         intrinsic_file_path = os.path.join(gaussian_model.cfg['output']['save_dir'], 'ply', 'intrinsic.yaml')
         with open(intrinsic_file_path, "w", encoding="utf-8") as file:
             yaml.dump(intrinsic_dict, file, allow_unicode=True, sort_keys=False)

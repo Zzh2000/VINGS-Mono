@@ -73,7 +73,7 @@ class LoopDetector:
         uv_depth = torch.stack([vu_kp1[valid_mask,1], vu_kp1[valid_mask,0], gt_depth1.squeeze(0)[vu_kp1[valid_mask,1], vu_kp1[valid_mask,0]]], dim=-1)
         world_points1 = tfer.transform(uv_depth, 'pixel', 'world', pose=c2w1).unsqueeze(0) # (1, N, 3)
         img_points2   = vu_kp2[valid_mask].unsqueeze(0) # (1, N, 2)
-        intrinsics    = torch.tensor([[tfer.fv, 0, tfer.cv], [0, tfer.fu, tfer.cu], [0, 0, 1]], dtype=torch.float32, device=c2w1.device).unsqueeze(0) # (1, 3, 3)
+        intrinsics    = torch.tensor([[tfer.fu, 0, tfer.cu], [0, tfer.fv, tfer.cv], [0, 0, 1]], dtype=torch.float32, device=c2w1.device).unsqueeze(0) # (1, 3, 3)
         
         # PnP.
         # pred_w2c2 = kornia.geometry.solve_pnp_dlt(world_points1, img_points2.to(torch.float32), intrinsics).squeeze(0)        

@@ -110,7 +110,8 @@ def get_smooth_loss(disp, img):
 def get_loss(cfg, pred_dict, gt_dict):
 
     sky_mask = gt_dict['rgb'].sum(axis=0) == 0.0 # (H, W)
-    valid_mask = torch.bitwise_and(~sky_mask, gt_dict['depth'].sum(axis=0) > 0.0) # (H, W)
+    # valid_mask = torch.bitwise_and(~sky_mask, gt_dict['depth'].sum(axis=0) > 0.0) # (H, W)
+    valid_mask = torch.ones_like(sky_mask)  # no masking - use all pixels
 
     ssim_timeidx_weight   = 0.2
     normal_timeidx_weight = 1.0

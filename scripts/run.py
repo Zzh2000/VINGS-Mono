@@ -1,8 +1,9 @@
+import os
+os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'max_split_size_mb:512')
 import numpy as np
 import shutil
 import torch
 from lietorch import SE3
-import os
 from frontend.dbaf import DBAFusion
 from gaussian.gaussian_model import GaussianModel
 from gaussian.vis_utils import save_ply, vis_map, vis_bev
@@ -22,6 +23,7 @@ from loop.loop_model import LoopModel
 from metric.metric_model import Metric_Model
 import time
 from tqdm import tqdm
+from scipy.spatial.transform import Rotation as ScipyR
 if config['mode'] == 'vo_nerfslam': from frontend_vo.vio_slam import VioSLAM
 
 
@@ -76,7 +78,7 @@ class Runner:
             
             self.tracker.frontend.all_imu   = self.dataset.preload_imu()
             self.tracker.frontend.all_stamp = self.dataset.preload_camtimestamp()
-            
+            # breakpoint()
             # torch.set_grad_enabled(False)
             self.tracker.track(data_packet if not self.cfg['mode']=='vo_nerfslam' else datapacket_to_nerfslam(data_packet, idx))
             # torch.set_grad_enabled(True)
@@ -85,9 +87,18 @@ class Runner:
             # Judge whether new keyframe is added and package keyframe dict.
             viz_out = judge_and_package(self.tracker, data_packet['intrinsic'])
             
-            if viz_out is not None and (self.cfg['mode'] in ['vo', 'vo_nerfslam'] or self.tracker.video.imu_enabled):
+            if viz_out is not None:
                 # Save and check.
-                new_viz_out = self.mapper.run(viz_out, True)
+                # Save all keyframe poses to droid_c2w/ for full trajectory
+                for i, tstamp in enumerate(viz_out['viz_out_idx_to_f_idx']):
+                    c2w = viz_out['poses'][i].cpu().numpy()
+                    ts_sec = float(tstamp.item())  # timestamp in seconds
+                    np.savetxt(f"{self.cfg['output']['save_dir']}/droid_c2w/{ts_sec:.6f}.txt", c2w)
+
+                if self.cfg.get('use_mapper', True):
+                    new_viz_out = self.mapper.run(viz_out, True)
+                else:
+                    new_viz_out = viz_out
                 
                 if 'use_loop' in list(self.cfg.keys()) and self.cfg['use_loop']:
                     if viz_out["global_kf_id"][-1] > 10 and viz_out["global_kf_id"][-1] % 3 == 0:
@@ -105,10 +116,104 @@ class Runner:
                         self.storage_manager.vis_map_storage(self.tracker, self.mapper)    
                         self.storage_manager.vis_bev_storage(self.tracker, self.mapper)    
             
-            if (idx == len(self.dataset) - 1) and self.mapper._xyz.shape[0] > 0:
+            if self.cfg.get('use_mapper', True) and (idx == len(self.dataset) - 1) and self.mapper._xyz.shape[0] > 0:
             # if ((idx+1) % 100 == 0 or (idx == len(self.dataset) - 1)) and self.mapper._xyz.shape[0] > 0:
                 save_ply(self.mapper, idx, save_mode='2dgs')
                 # save_ply(self.mapper, idx, save_mode='pth')
+
+        # After tracking: fill in poses for all input frames (not just keyframes)
+        self._save_full_trajectory()
+
+    def _save_full_trajectory(self):
+        """Fill per-frame poses for all dataset frames using SE3 Lie-algebra interpolation
+        between keyframe poses from droid_c2w/.  This avoids the video-buffer rollup bug
+        (video.poses[:N] only contains the last N keyframes after rollup, not the full
+        trajectory).  droid_c2w/ snapshots are always correct regardless of rollup.
+
+        Result saved as traj_full.txt in TUM format (one line per dataset frame).
+        """
+        import glob as globlib
+
+        save_dir = self.cfg['output']['save_dir']
+        droid_c2w_dir = os.path.join(save_dir, 'droid_c2w')
+        pose_files = sorted(globlib.glob(os.path.join(droid_c2w_dir, '*.txt')))
+
+        if not pose_files:
+            print("[traj_filler] No keyframes in droid_c2w/, skipping full trajectory.")
+            return
+
+        try:
+            print(f"[traj_filler] Loading {len(pose_files)} keyframe poses from droid_c2w/...")
+
+            # Load keyframe c2w matrices → convert to w2c SE3 (7-dim TQ)
+            kf_times, kf_w2c_tqs = [], []
+            for pf in pose_files:
+                ts = float(os.path.basename(pf)[:-4])   # filename = timestamp in seconds
+                T_c2w = np.loadtxt(pf)
+                if T_c2w.shape != (4, 4):
+                    continue
+                T_w2c = np.linalg.inv(T_c2w)
+                q = ScipyR.from_matrix(T_w2c[:3, :3]).as_quat()  # qx qy qz qw
+                t = T_w2c[:3, 3]
+                kf_times.append(ts)
+                kf_w2c_tqs.append(np.concatenate([t, q]))
+
+            if not kf_times:
+                print("[traj_filler] No valid keyframe poses found, skipping.")
+                return
+
+            # Sort keyframes by timestamp
+            order = np.argsort(kf_times)
+            kf_times   = np.array(kf_times)[order]
+            kf_w2c_tqs = np.array(kf_w2c_tqs)[order]
+
+            device = self.cfg['device']['tracker']
+            ts_kf = torch.tensor(kf_times,   dtype=torch.float64, device=device)
+            Ps    = SE3(torch.tensor(kf_w2c_tqs, dtype=torch.float64, device=device))
+            N     = len(kf_times)
+
+            # Collect all dataset frame timestamps (lightweight second pass)
+            print("[traj_filler] Collecting dataset timestamps for interpolation...")
+            all_tstamps = []
+            for idx in tqdm(range(len(self.dataset)), desc='traj_filler', leave=False):
+                data = self.dataset[idx]
+                all_tstamps.append(data['timestamp'])
+
+            n_images = len(all_tstamps)
+            tt = torch.tensor(all_tstamps, dtype=torch.float64, device=device)
+
+            # SE3 Lie-algebra interpolation
+            t0_idx = torch.tensor(
+                [(ts_kf <= t).sum().item() - 1 for t in tt],
+                dtype=torch.long, device=device)
+            t0_idx = torch.clamp(t0_idx, min=0)
+            t1_idx = torch.where(t0_idx < N - 1, t0_idx + 1, t0_idx)
+
+            dt      = ts_kf[t1_idx] - ts_kf[t0_idx] + 1e-6   # guard /0
+            dP      = Ps[t1_idx] * Ps[t0_idx].inv()
+            v       = dP.log() / dt.unsqueeze(-1)
+            tau     = (tt - ts_kf[t0_idx]).unsqueeze(-1).clamp(min=0)  # no backward extrapolation
+            full_w2c = SE3.exp(v * tau) * Ps[t0_idx]           # w2c interpolated poses
+
+            c2ws = full_w2c.inv().matrix().cpu().numpy()        # (n_images, 4, 4) c2w
+
+            # Save as TUM format: timestamp tx ty tz qx qy qz qw
+            tum_data = []
+            for i in range(n_images):
+                T = c2ws[i]
+                r = ScipyR.from_matrix(T[:3, :3])
+                qx, qy, qz, qw = r.as_quat()
+                tum_data.append([all_tstamps[i], T[0, 3], T[1, 3], T[2, 3], qx, qy, qz, qw])
+
+            out_path = os.path.join(save_dir, 'traj_full.txt')
+            np.savetxt(out_path, tum_data, fmt='%.9f')
+            print(f"[traj_filler] Saved full trajectory ({n_images} frames, "
+                  f"{N} keyframes): {out_path}")
+
+        except Exception as exc:
+            import traceback
+            print(f"[traj_filler] ERROR: {exc}")
+            traceback.print_exc()
             
 
 if __name__ == '__main__':

@@ -376,7 +376,7 @@ class DepthVideo:
 
             # 1) visual-only BA
             # 2) multi-sensor BA
-            if not self.imu_enabled: 
+            if not self.imu_enabled or motion_only:
                 droid_backends.ba(self.poses, self.disps, self.intrinsics[0], self.disps_sens,
                     target, weight, eta, ii, jj, t0, t1, itrs, lm, ep, motion_only)
                 '''
@@ -557,21 +557,27 @@ class DepthVideo:
                 self.cur_jj     = jj[active_index]
                 self.cur_target = target[active_index]
                 self.cur_weight = weight[active_index]
+
+                # Guard: no edges inside [t0, t1) — launching the CUDA kernel with
+                # grid-size 0 causes cudaErrorInvalidConfiguration.
+                if self.cur_ii.shape[0] == 0:
+                    return
+
                 self.cur_eta    = eta[(t0-ii.min().item()):]
                 # TTD 2024/10/22
                 self.middleware_dict = {'ii': self.cur_ii, 'jj': self.cur_jj, 't0': t0, 't1': t1}
 
                 bacore.init(self.poses, self.disps, self.intrinsics[0], self.disps_sens,
                     self.cur_target, self.cur_weight, self.cur_eta, self.cur_ii, self.cur_jj, t0, t1, itrs, lm, ep, motion_only)
-                
+
                 # TTD 2024/09/27
                 Q, E = bacore.hessian_expand(torch.zeros_like(H), torch.zeros_like(v))
                 
                 self.cur_graph = gtsam.NonlinearFactorGraph()
                 params = gtsam.LevenbergMarquardtParams()#;params.setMaxIterations(1)
 
-                # imu factor
-                if not self.ignore_imu:
+                # imu factor (skip for motion_only BA — temp slots have no preintegrations)
+                if not self.ignore_imu and not motion_only:
                     for i in range(t0,t1):
                         if i > t0:
                             imu_factor = gtsam.gtsam.CombinedImuFactor(\
@@ -591,7 +597,7 @@ class DepthVideo:
                     self.cur_graph.push_back(self.marg_factor)
 
                 # GNSS factor
-                if self.gnss_init_t1 > 0:
+                if not motion_only and self.gnss_init_t1 > 0:
                     for i in range(t0,t1):
                         if self.state.gnss_valid[i]:
                             p = np.matmul(trans.Cen(self.ten0).T, self.state.gnss_position[i] - self.ten0)
@@ -604,7 +610,7 @@ class DepthVideo:
                             self.cur_graph.push_back(gnss_factor)
                 
                 # Odo factor
-                for i in range(t0,t1):
+                for i in range(t0,t1) if not motion_only else []:
                     if self.state.odo_valid[i]:
                         vb = self.state.odo_vel[i]
                         odo_factor = gtsam.VelFactor(X(i),V(i),vb,gtsam.noiseModel.Diagonal.Sigmas(np.array([2.0,2.0,2.0])))
@@ -893,13 +899,19 @@ class DepthVideo:
                 self.cur_jj     = jj[active_index]
                 self.cur_target = target[active_index]
                 self.cur_weight = weight[active_index]
+
+                # Guard: no edges inside [t0, t1) — launching the CUDA kernel with
+                # grid-size 0 causes cudaErrorInvalidConfiguration.
+                if self.cur_ii.shape[0] == 0:
+                    return
+
                 self.cur_eta    = eta[(t0-ii.min().item()):]
                 # TTD 2024/10/22
                 self.middleware_dict = {'ii': self.cur_ii, 'jj': self.cur_jj, 't0': t0, 't1': t1}
 
                 bacore.init(self.poses, self.disps, self.intrinsics[0], self.disps_sens,
                     self.cur_target, self.cur_weight, self.cur_eta, self.cur_ii, self.cur_jj, t0, t1, itrs, lm, ep, motion_only)
-                
+
                 # TTD 2024/09/27
                 Q, E = bacore.hessian_expand(torch.zeros_like(H), torch.zeros_like(v))
                 self.cur_graph = gtsam.NonlinearFactorGraph()
