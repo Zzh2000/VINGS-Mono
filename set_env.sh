@@ -31,6 +31,21 @@ python scripts/run.py configs/rtg/hotel.yaml
 
 
 
+sbatch -A ls_polle -n 1 --cpus-per-task=4 --mem-per-cpu=10G --gpus=1 --gres=gpumem:30g --time=1:00:00 --wrap="python scripts/run_odin.py --seqs Basement1"
+sbatch -A ls_polle -n 1 --cpus-per-task=4 --mem-per-cpu=10G --gpus=1 --gres=gpumem:30g --time=1:00:00 --wrap="python scripts/run_odin.py --seqs Basement2"
+sbatch -A ls_polle -n 1 --cpus-per-task=4 --mem-per-cpu=10G --gpus=1 --gres=gpumem:30g --time=1:00:00 --wrap="python scripts/run_odin.py --seqs Basement3"
+sbatch -A ls_polle -n 1 --cpus-per-task=4 --mem-per-cpu=10G --gpus=1 --gres=gpumem:30g --time=1:00:00 --wrap="python scripts/run_odin.py --seqs Basement4"
+sbatch -A ls_polle -n 1 --cpus-per-task=4 --mem-per-cpu=10G --gpus=1 --gres=gpumem:30g --time=1:00:00 --wrap="python scripts/run_odin.py --seqs Ferrari1"
+sbatch -A ls_polle -n 1 --cpus-per-task=4 --mem-per-cpu=10G --gpus=1 --gres=gpumem:30g --time=1:00:00 --wrap="python scripts/run_odin.py --seqs Motorworld1"
+sbatch -A ls_polle -n 1 --cpus-per-task=4 --mem-per-cpu=10G --gpus=1 --gres=gpumem:30g --time=1:00:00 --wrap="python scripts/run_odin.py --seqs Motorworld2"
+sbatch -A ls_polle -n 1 --cpus-per-task=4 --mem-per-cpu=10G --gpus=1 --gres=gpumem:30g --time=1:00:00 --wrap="python scripts/run_odin.py --seqs Motorworld4"
+sbatch -A ls_polle -n 1 --cpus-per-task=4 --mem-per-cpu=10G --gpus=1 --gres=gpumem:30g --time=1:00:00 --wrap="python scripts/run_odin.py --seqs Motorworld5"
+sbatch -A ls_polle -n 1 --cpus-per-task=4 --mem-per-cpu=10G --gpus=1 --gres=gpumem:30g --time=1:00:00 --wrap="python scripts/run_odin.py --seqs NTU_Campus1"
+sbatch -A ls_polle -n 1 --cpus-per-task=4 --mem-per-cpu=10G --gpus=1 --gres=gpumem:30g --time=1:00:00 --wrap="python scripts/run_odin.py --seqs NTU_Campus2"
+sbatch -A ls_polle -n 1 --cpus-per-task=4 --mem-per-cpu=10G --gpus=1 --gres=gpumem:30g --time=1:00:00 --wrap="python scripts/run_odin.py --seqs NTU_Corridor1"
+sbatch -A ls_polle -n 1 --cpus-per-task=4 --mem-per-cpu=10G --gpus=1 --gres=gpumem:30g --time=1:00:00 --wrap="python scripts/run_odin.py --seqs NTU_Corridor2"
+sbatch -A ls_polle -n 1 --cpus-per-task=4 --mem-per-cpu=10G --gpus=1 --gres=gpumem:30g --time=1:00:00 --wrap="python scripts/run_odin.py --seqs NTU_Office"
+
 # USE THIS FOR RUN!!!!!!!!!!!!! (previous are some used for install, some need gcc8.5 some need 12.2)
 # need 4090 for fp16 support
 # srun --time=4:00:00 -A ls_polle -n 1  --cpus-per-task=4 --mem-per-cpu=10G --gpus=rtx_4090:1 --gres=gpumem:20g --pty bash
