@@ -41,9 +41,11 @@ class Runner:
         
         if 'phone' not in cfg['dataset']['module']: self.tracker.dataset_length = len(self.dataset)
         
-        self.mapper = GaussianModel(cfg)
-        
-        self.looper = LoopModel(cfg)
+        if cfg.get('use_mapper', True):
+            self.mapper = GaussianModel(cfg)
+
+        if cfg.get('use_loop', False):
+            self.looper = LoopModel(cfg)
         
         if 'use_metric' in cfg.keys() and cfg['use_metric']:
             self.metric_predictor = Metric_Model(cfg) 

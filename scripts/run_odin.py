@@ -7,14 +7,211 @@ import argparse
 from scipy.spatial.transform import Rotation as R
 import matplotlib.pyplot as plt
 
+# SEQUENCES = [
+#     'Basement1', 'Basement2', 'Basement3', 'Basement4',
+#     'Ferrari1',
+#     'Motorworld1', 'Motorworld2', 'Motorworld4', 'Motorworld5',
+#     'NTU_Campus1', 'NTU_Campus2',
+#     'NTU_Corridor1', 'NTU_Corridor2',
+#     'NTU_Office',
+# ]
+
+# SEQUENCES = [
+#     'Downtown1', 'Downtown2', 'Downtown3', 'Downtown4', 'Downtown5', 'Elevator4', 'Ferrari2', 'Ferrari3', 'Graffiti1', 'Graffiti2', 'Graffiti3'
+# ]
 SEQUENCES = [
-    'Basement1', 'Basement2', 'Basement3', 'Basement4',
-    'Ferrari1',
-    'Motorworld1', 'Motorworld2', 'Motorworld4', 'Motorworld5',
-    'NTU_Campus1', 'NTU_Campus2',
-    'NTU_Corridor1', 'NTU_Corridor2',
-    'NTU_Office',
+     'Graffiti1', 'Graffiti2', 'Graffiti3'
 ]
+
+# Per-sequence fixed eval indices — fill in before running render-eval
+ODIN_EVAL_INDICES = {
+}
+
+
+def psnr(img1, img2):
+    import torch
+    mse = ((img1 - img2) ** 2).view(img1.shape[0], -1).mean(1, keepdim=True)
+    return 20 * torch.log10(1.0 / torch.sqrt(mse))
+
+
+def _gaussian_window(window_size, sigma):
+    import torch
+    from math import exp as mexp
+    gauss = torch.tensor([
+        mexp(-((x - window_size // 2) ** 2) / float(2 * sigma ** 2))
+        for x in range(window_size)
+    ])
+    return gauss / gauss.sum()
+
+
+def ssim(img1, img2, window_size=11):
+    import torch
+    import torch.nn.functional as F
+    channel = img1.size(1)
+    _1d = _gaussian_window(window_size, 1.5).unsqueeze(1)
+    _2d = _1d.mm(_1d.t()).float().unsqueeze(0).unsqueeze(0)
+    window = _2d.expand(channel, 1, window_size, window_size).contiguous().to(img1.device)
+    mu1 = F.conv2d(img1, window, padding=window_size // 2, groups=channel)
+    mu2 = F.conv2d(img2, window, padding=window_size // 2, groups=channel)
+    mu1_sq, mu2_sq, mu1_mu2 = mu1 ** 2, mu2 ** 2, mu1 * mu2
+    s1  = F.conv2d(img1 * img1, window, padding=window_size // 2, groups=channel) - mu1_sq
+    s2  = F.conv2d(img2 * img2, window, padding=window_size // 2, groups=channel) - mu2_sq
+    s12 = F.conv2d(img1 * img2, window, padding=window_size // 2, groups=channel) - mu1_mu2
+    C1, C2 = 0.01 ** 2, 0.03 ** 2
+    ssim_map = ((2 * mu1_mu2 + C1) * (2 * s12 + C2)) / (
+               (mu1_sq + mu2_sq + C1) * (s1 + s2 + C2))
+    return ssim_map.mean()
+
+
+def render_and_eval_sequence(seq_path, output_folder, use_full_traj_for_poses=True, n_eval=50):
+    """Load saved 2DGS model, render at n_eval frames, compute PSNR/SSIM/LPIPS."""
+    import importlib, torch, torch.nn.functional as F
+
+    scripts_dir = os.path.dirname(os.path.abspath(__file__))
+    if scripts_dir not in sys.path:
+        sys.path.insert(0, scripts_dir)
+
+    from gaussian.gaussian_model import GaussianModel
+    from torchmetrics.image import LearnedPerceptualImagePatchSimilarity
+
+    seq_name   = os.path.basename(seq_path)
+    seq_output = os.path.join(output_folder, seq_name)
+    subdirs    = sorted([d for d in glob(os.path.join(seq_output, '*')) if os.path.isdir(d)])
+
+    # Locate run directory (non-empty ply/)
+    run_dir = None
+    for d in [seq_output] + subdirs:
+        if glob(os.path.join(d, 'ply', '*_2dgs.ply')):
+            run_dir = d
+            break
+    if run_dir is None:
+        print(f'[render_eval] No ply/ directory for {seq_name}, skipping.')
+        return None
+
+    ply_files = sorted(glob(os.path.join(run_dir, 'ply', '*_2dgs.ply')))
+    ply_path  = ply_files[-1]
+
+    intrinsic_path = os.path.join(run_dir, 'ply', 'intrinsic.yaml')
+    if not os.path.exists(intrinsic_path):
+        print(f'[render_eval] No intrinsic.yaml for {seq_name}')
+        return None
+
+    # Locate trajectory
+    traj_file = None
+    pref = ['traj_full.txt', 'traj_combined.txt'] if use_full_traj_for_poses \
+           else ['traj_combined.txt', 'traj_full.txt']
+    for d in [seq_output] + subdirs:
+        for name in pref:
+            c = os.path.join(d, name)
+            if os.path.exists(c):
+                traj_file = c
+                break
+        if traj_file:
+            break
+    if traj_file is None:
+        print(f'[render_eval] No trajectory for {seq_name}')
+        return None
+    print(f'[render_eval] Using trajectory: {traj_file}')
+
+    traj       = load_tum_trajectory(traj_file)
+    traj_times = traj[:, 0]
+
+    cfg_path = os.path.join(run_dir, 'config.yaml')
+    with open(cfg_path) as f:
+        cfg = yaml.safe_load(f)
+    cfg['dataset']['root']  = seq_path
+    cfg['device']           = {'tracker': 'cuda:0', 'mapper': 'cuda:0'}
+
+    cfg_intr = cfg['intrinsic']
+    intr = {
+        'H':  cfg_intr['H'],
+        'W':  cfg_intr['W'],
+        'fu': cfg_intr['fu'],
+        'fv': cfg_intr['fv'],
+        'cu': cfg_intr['cu'],
+        'cv': cfg_intr['cv'],
+    }
+    print(f'[render_eval] Rendering at full resolution: {intr["W"]}x{intr["H"]}')
+
+    get_dataset_fn = importlib.import_module(cfg['dataset']['module']).get_dataset
+    dataset  = get_dataset_fn(cfg)
+    n_frames = len(dataset)
+
+    if seq_name in ODIN_EVAL_INDICES:
+        eval_indices = [i for i in ODIN_EVAL_INDICES[seq_name] if i < n_frames]
+        print(f'[render_eval] Using fixed eval indices for {seq_name} (n={len(eval_indices)})')
+    else:
+        rng          = np.random.default_rng(42)
+        eval_indices = sorted(rng.choice(n_frames, size=min(n_eval, n_frames), replace=False).tolist())
+
+    mapper = GaussianModel(cfg)
+    mapper.load_ply_ckpt(ply_path)
+    mapper.tfer.H  = intr['H']
+    mapper.tfer.W  = intr['W']
+    mapper.tfer.fu = intr['fu']
+    mapper.tfer.fv = intr['fv']
+    mapper.tfer.cu = intr['cu']
+    mapper.tfer.cv = intr['cv']
+
+    device   = 'cuda:0'
+    lpips_fn = LearnedPerceptualImagePatchSimilarity(net_type='vgg').to(device)
+
+    render_imgs_dir = os.path.join(seq_output, 'render_imgs')
+    os.makedirs(render_imgs_dir, exist_ok=True)
+    import torchvision.utils as vutils
+    import cv2 as _cv2
+
+    psnr_vals, ssim_vals, lpips_vals = [], [], []
+
+    for save_i, idx in enumerate(eval_indices):
+        ts      = dataset.rgbinfo_dict['timestamp'][idx]
+        nearest = int(np.argmin(np.abs(traj_times - ts)))
+        if np.abs(traj_times[nearest] - ts) > 0.5:
+            continue
+
+        row         = traj[nearest]
+        rot_mat     = R.from_quat(row[4:8]).as_matrix()
+        c2w         = np.eye(4)
+        c2w[:3, :3] = rot_mat
+        c2w[:3, 3]  = row[1:4]
+        w2c = torch.tensor(np.linalg.inv(c2w), dtype=torch.float32, device=device)
+
+        rgb_path = dataset.rgbinfo_dict['filepath'][idx]
+        rgb_raw  = _cv2.imread(rgb_path)
+        gt = torch.tensor(rgb_raw[..., [2, 1, 0]], dtype=torch.float32
+                          ).permute(2, 0, 1).to(device) / 255.0
+
+        if gt.shape[1] != intr['H'] or gt.shape[2] != intr['W']:
+            gt = F.interpolate(gt.unsqueeze(0),
+                               size=(intr['H'], intr['W']),
+                               mode='bilinear', align_corners=False).squeeze(0)
+
+        with torch.no_grad():
+            rendered = mapper.render(w2c, intr)['rgb'].clamp(0.0, 1.0)
+
+        gt_b = gt.unsqueeze(0)
+        rd_b = rendered.unsqueeze(0)
+
+        psnr_vals.append(psnr(rd_b, gt_b).mean().item())
+        ssim_vals.append(ssim(rd_b, gt_b).item())
+        lpips_vals.append(lpips_fn(rd_b * 2 - 1, gt_b * 2 - 1).item())
+
+        vutils.save_image(gt,       os.path.join(render_imgs_dir, f'{save_i:04d}_gt.png'))
+        vutils.save_image(rendered, os.path.join(render_imgs_dir, f'{save_i:04d}_rendered.png'))
+
+    if not psnr_vals:
+        print(f'[render_eval] No valid frames for {seq_name}')
+        return None
+
+    result = {
+        'psnr':  float(np.mean(psnr_vals)),
+        'ssim':  float(np.mean(ssim_vals)),
+        'lpips': float(np.mean(lpips_vals)),
+        'n':     len(psnr_vals),
+    }
+    print(f'[render_eval] {seq_name}  PSNR={result["psnr"]:.2f}  '
+          f'SSIM={result["ssim"]:.4f}  LPIPS={result["lpips"]:.4f}  (n={result["n"]})')
+    return result
 
 
 def load_tum_trajectory(filepath):
@@ -211,7 +408,7 @@ def run_sequence(seq_path, config_template_path, output_folder,
 
 
 def main():
-    dataset_base = '/cluster/scratch/zihzhu/odin'
+    dataset_base = '/home/zihzhu/data/Datasets/odin2'
 
     config_template = os.path.join(
         os.path.dirname(os.path.abspath(__file__)),
@@ -219,7 +416,7 @@ def main():
     )
     output_folder = os.path.join(
         os.path.dirname(os.path.abspath(__file__)),
-        '../output_noLoop_noMetric/odin_eval'
+        '../output_noLoop_noMetric_MappingNoMask_fulltraj/odin_eval'
     )
 
     parser = argparse.ArgumentParser(description='Run VINGS-Mono on ODIN dataset')
@@ -231,8 +428,12 @@ def main():
     parser.add_argument('--skip-slam',  action='store_true')
     parser.add_argument('--skip-eval',  action='store_true')
     parser.add_argument('--no-plot',    action='store_true')
-    parser.add_argument('--full-traj',  action='store_true',
+    parser.add_argument('--full-traj',   action='store_true',
                         help='Evaluate traj_full.txt (per-frame) instead of traj_combined.txt (keyframes)')
+    parser.add_argument('--render-eval', action='store_true',
+                        help='Render from saved 2DGS model and compute PSNR/SSIM/LPIPS')
+    parser.add_argument('--render-n',    type=int, default=50,
+                        help='Number of frames for render evaluation (default: 50)')
     args = parser.parse_args()
 
     os.makedirs(args.output, exist_ok=True)
@@ -240,9 +441,10 @@ def main():
     if args.seqs:
         seqs = [os.path.join(args.dataset, s) for s in args.seqs]
     else:
+        print(args.dataset)
         seqs = [os.path.join(args.dataset, s) for s in SEQUENCES
                 if os.path.isdir(os.path.join(args.dataset, s))]
-
+    print('Remember to change SEQUENCES top of the file to the correct sequences')
     print(f'Output: {args.output}')
     print(f'Sequences: {[os.path.basename(s) for s in seqs]}')
 
@@ -263,32 +465,68 @@ def main():
             run_plot=not args.no_plot,
             use_full_traj=args.full_traj,
         )
+
+        if args.render_eval:
+            render_result = render_and_eval_sequence(
+                seq_path=seq,
+                output_folder=args.output,
+                use_full_traj_for_poses=args.full_traj,
+                n_eval=args.render_n,
+            )
+            result['render'] = render_result
+        else:
+            result['render'] = None
+
         results.append(result)
 
     # Summary
     print(f'\n{"="*60}')
     print('ODIN RESULTS SUMMARY')
     print(f'{"="*60}')
+    has_render = any(r.get('render') is not None for r in results)
     hdr = f'{"Sequence":<20} {"ATE [cm]":<12} {"Scale [%]":<12}'
+    if has_render:
+        hdr += f' {"PSNR":<8} {"SSIM":<8} {"LPIPS":<8}'
     print(hdr)
     print('-' * len(hdr))
     ate_values, scale_errors = [], []
+    psnr_values, ssim_values, lpips_values = [], [], []
     for r in results:
         ate_cm    = r['ate'] * 100 if r['ate'] is not None else None
         scale_err = abs(1 - r['scale']) * 100 if r['scale'] is not None else None
-        print(f"{r['seq']:<20} {f'{ate_cm:.2f}' if ate_cm is not None else 'N/A':<12} "
-              f"{f'{scale_err:.2f}' if scale_err is not None else 'N/A':<12}")
+        row = (f"{r['seq']:<20} {f'{ate_cm:.2f}' if ate_cm is not None else 'N/A':<12} "
+               f"{f'{scale_err:.2f}' if scale_err is not None else 'N/A':<12}")
+        if has_render:
+            rr = r.get('render')
+            rr_psnr  = f"{rr['psnr']:.2f}"  if rr else 'N/A'
+            rr_ssim  = f"{rr['ssim']:.3f}"  if rr else 'N/A'
+            rr_lpips = f"{rr['lpips']:.3f}" if rr else 'N/A'
+            row += f' {rr_psnr:<8} {rr_ssim:<8} {rr_lpips:<8}'
+        print(row)
         if ate_cm    is not None: ate_values.append(ate_cm)
         if scale_err is not None: scale_errors.append(scale_err)
+        if r.get('render'):
+            psnr_values.append(r['render']['psnr'])
+            ssim_values.append(r['render']['ssim'])
+            lpips_values.append(r['render']['lpips'])
     print('-' * len(hdr))
     if ate_values:
-        print(f'{"Mean":<20} {np.mean(ate_values):<12.2f} {np.mean(scale_errors):<12.2f}')
+        mean_row = f'{"Mean":<20} {np.mean(ate_values):<12.2f} {np.mean(scale_errors):<12.2f}'
+        if has_render and psnr_values:
+            mean_row += (f' {np.mean(psnr_values):<8.2f}'
+                         f' {np.mean(ssim_values):<8.4f}'
+                         f' {np.mean(lpips_values):<8.4f}')
+        print(mean_row)
         print('\nLaTeX:')
         print('ATE [cm] & ' + ' & '.join(f'{v:.2f}' for v in ate_values)
               + f' & {np.mean(ate_values):.2f} \\\\')
         if scale_errors:
             print('Scale [%] & ' + ' & '.join(f'{v:.2f}' for v in scale_errors)
                   + f' & {np.mean(scale_errors):.2f} \\\\')
+    if psnr_values:
+        print('PSNR & ' + ' & '.join(f'{v:.2f}' for v in psnr_values) + f' & {np.mean(psnr_values):.2f} \\\\')
+        print('SSIM & ' + ' & '.join(f'{v:.4f}' for v in ssim_values) + f' & {np.mean(ssim_values):.4f} \\\\')
+        print('LPIPS & ' + ' & '.join(f'{v:.4f}' for v in lpips_values) + f' & {np.mean(lpips_values):.4f} \\\\')
 
 
 if __name__ == '__main__':

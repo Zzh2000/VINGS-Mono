@@ -4,7 +4,7 @@ use_dynamic: False
 use_loop: False
 use_pose_refine: False
 use_metric: False
-use_mapper: False
+use_mapper: True
 
 mode: 'vio'  # 'vo' or 'vio'
 
@@ -13,7 +13,9 @@ device:
   mapper: 'cuda:0'
 
 dataset:
-  root: /cluster/scratch/zihzhu/odin/Basement1
+  # root: /cluster/scratch/zihzhu/odin/Basement1
+  # root: /home/zihzhu/data/Datasets/odin/Basement1
+  root: /home/zihzhu/data/Datasets/odin2/Downtown1
   module: datasets.odin
   rgb_strip: 1
   pcd_downsample: 64

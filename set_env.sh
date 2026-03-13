@@ -14,10 +14,10 @@ srun --time=1:00:00 -A ls_polle -n 1  --cpus-per-task=4 --mem-per-cpu=10G --gpus
 srun --time=4:00:00 -A ls_polle -n 1  --cpus-per-task=4 --mem-per-cpu=10G --gpus=rtx_4090:1 --gres=gpumem:20g --pty bash
 module load stack/2024-04 cuda/11.8.0 
 
-cd gtsam
+cd submodules/gtsam
 mkdir build
 cd build
-cmake .. -DGTSAM_BUILD_PYTHON=1 -DGTSAM_PYTHON_VERSION=3.9.19
+cmake .. -DGTSAM_BUILD_PYTHON=1 -DGTSAM_PYTHON_VERSION=3.11.13
 make python-install
 
 module load stack/2024-04  gcc/12.2.0 openmpi/4.1.6 boost/1.83.0
@@ -28,7 +28,7 @@ python scripts/run.py configs/rtg/hotel.yaml
 module load stack/2025-06 gcc/8.5.0 openmpi/4.1.6
 
 python scripts/run.py configs/rtg/hotel.yaml
-
+ conda activate vings_vio && python scripts/run_odin.py --seqs Basement1
 
 
 sbatch -A ls_polle -n 1 --cpus-per-task=4 --mem-per-cpu=10G --gpus=1 --gres=gpumem:30g --time=1:00:00 --wrap="python scripts/run_odin.py --seqs Basement1"
